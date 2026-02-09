@@ -1,9 +1,4 @@
-"""Main runner for the rover's dune detection loop.
-
-This script polls `detect_dune()` and logs the result. It intentionally
-keeps motor/action integration as placeholders so you can wire your
-`motor_controls` implementation safely.
-"""
+# main runner
 from __future__ import annotations
 
 import logging
@@ -17,19 +12,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 
 def take_action(result: DetectionResult) -> None:
-    """Decide motor actions based on detection result.
-
-    Replace the placeholder comments with calls to your `motor_controls`
-    functions (e.g., `motor_controls.drive_forward()`, `stop()`, etc.).
-    """
+    # decide motor actions
     if result.dune_confidence >= 0.6:
         logger.info("Dune likely (%.2f). Stopping / avoiding.", result.dune_confidence)
-        # TODO: integrate motor_controls to stop or navigate around dune
+        # todo: integrate motor_controls to stop or navigate
         # import motor_controls
         # motor_controls.stop()
     else:
         logger.info("No dune (%.2f). Continue exploring.", result.dune_confidence)
-        # TODO: motor_controls.drive_forward()
+        # todo: motor_controls drive forward
 
 
 def main(loop_delay: float = 1.0, use_camera: bool = True, distance_threshold: float = 1.0) -> None:
