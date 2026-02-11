@@ -1,4 +1,9 @@
-# camera helper
+"""Camera helper: provide a simple video feed and a `capture_frame()` API.
+
+Tries Picamera2 on Raspberry Pi first; falls back to OpenCV `VideoCapture`.
+
+Run as a script to open a live preview window. Press 'q' or ESC to exit.
+"""
 from __future__ import annotations
 
 import logging
@@ -32,7 +37,7 @@ def capture_frame() -> Any:
 	Uses Picamera2 if available, otherwise falls back to OpenCV VideoCapture.
 	"""
 	try:
-		import numpy as np  # ensure numpy
+		import numpy as np  # ensure numpy available for consistent frame type
 	except Exception:
 		np = None
 
@@ -44,7 +49,7 @@ def capture_frame() -> Any:
 		except Exception as exc:
 			logger.debug("Picamera2 capture failed: %s", exc)
 
-	# fallback to opencv
+	# Fallback to OpenCV
 	try:
 		import cv2
 	except Exception as exc:  # pragma: no cover - runtime dependent
@@ -85,7 +90,7 @@ def _preview_loop() -> None:
 			logger.error("No frame returned from capture_frame()")
 			break
 
-			# try convert frame
+		# If frame is not uint8, try to convert
 		try:
 			cv2.imshow(win, frame)
 		except Exception:
@@ -93,7 +98,7 @@ def _preview_loop() -> None:
 			cv2.imshow(win, np.asarray(frame))
 
 		key = cv2.waitKey(1) & 0xFF
-			if key == ord('q') or key == 27:  # q or esc
+		if key == ord('q') or key == 27:  # q or ESC
 			break
 
 	cv2.destroyAllWindows()
