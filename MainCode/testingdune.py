@@ -1,4 +1,4 @@
-from dune_detection import detect_dune
+from MainCode.dune_detection import detect_dune
 
 print("Running dune detection test...")
 

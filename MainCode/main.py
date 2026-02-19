@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Optional
 
-from dune_detection import detect_dune, DetectionResult
+from MainCode.dune_detection import detect_dune, DetectionResult
 
 logger = logging.getLogger("rover")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

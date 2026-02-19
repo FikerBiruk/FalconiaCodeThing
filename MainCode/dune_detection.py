@@ -8,19 +8,19 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 try:
-    from ultrasonic import get_distance
+    from MainCode.ultrasonic import get_distance
 except Exception:
     def get_distance() -> float:  # ignore
         raise ImportError("ultrasonic.get_distance not available")
 
 try:
-    from ir_sensor import is_obstacle
+    from MainCode.ir_sensor import is_obstacle
 except Exception:
     def is_obstacle() -> bool:  # ignore
         raise ImportError("ir_sensor.is_obstacle not available")
 
 try:
-    from camera_module import capture_frame
+    from MainCode.camera_module import capture_frame
 except Exception:
     def capture_frame() -> Any:  # ignore
         raise ImportError("camera_module.capture_frame not available")
