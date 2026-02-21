@@ -12,8 +12,8 @@ bus = smbus2.SMBus(1)  # Use I2C bus 1
 
 def read_analog(channel):
     """Read analog value from PCF8591 channel (0-3)."""
-    # Control byte: 0x40 + channel number
-    control_byte = 0x40 | channel
+    # Control byte: just the channel number (no DAC enable)
+    control_byte = channel
     
     # First read is previous value, second read is current
     bus.write_byte(PCF8591_ADDRESS, control_byte)

@@ -42,6 +42,9 @@ def read_channel(bus, channel):
         return None
     
     try:
+        # Write control byte to select the channel
+        bus.write_byte(PCF8591_ADDR, channel)
+        
         # Dummy read (discard result, selects channel for next read)
         bus.read_byte(PCF8591_ADDR)
         
