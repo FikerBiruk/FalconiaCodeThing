@@ -6,7 +6,7 @@ PCF8591_ADDRESS = 0x48  # Default I2C address
 HALL_CHANNEL = 0        # AIN0 (change to 1, 2, or 3 if using different channel)
 
 # Threshold for magnet detection (adjust based on your sensor)
-MAGNET_THRESHOLD = 150  # 0-255 range (8-bit ADC)
+MAGNET_THRESHOLD = 100  # 0-255 range (8-bit ADC)
 
 bus = smbus2.SMBus(1)  # Use I2C bus 1
 
@@ -25,6 +25,8 @@ def read_analog(channel):
 try:
     print("Analog Hall Sensor Test")
     print(f"Reading from PCF8591 channel {HALL_CHANNEL}")
+    print(f"Threshold set to: {MAGNET_THRESHOLD}")
+    print(f"Detection logic: if value > {MAGNET_THRESHOLD} = MAGNET DETECTED")
     print("Press Ctrl+C to exit\n")
     
     while True:
