@@ -66,14 +66,37 @@ def _import_cv2():
 class FrameGrabber:
     """Continuously capture frames in a background thread.
 
-    The latest JPEG-encoded frame is always available via ``.frame``.
+    Tries Picamera2 first (for Pi Camera), falls back to OpenCV VideoCapture
+    (for USB webcams).  The latest JPEG-encoded frame is always available
+    via ``.frame``.
     """
 
     def __init__(self, device: int = 0, width: int = 1280, height: int = 720) -> None:
         self.cv2 = _import_cv2()
-        self._cap = self.cv2.VideoCapture(device)
-        self._cap.set(self.cv2.CAP_PROP_FRAME_WIDTH, width)
-        self._cap.set(self.cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self._width = width
+        self._height = height
+        self._device = device
+
+        self._picam = None
+        self._cap = None
+
+        # Try Picamera2 first (Pi Camera)
+        try:
+            from picamera2 import Picamera2
+            self._picam = Picamera2()
+            self._picam.configure(
+                self._picam.create_video_configuration(
+                    main={"size": (width, height), "format": "RGB888"}
+                )
+            )
+            self._picam.start()
+            logger.info("FrameGrabber: using Picamera2 backend.")
+        except Exception as exc:
+            logger.debug("Picamera2 not available (%s), falling back to OpenCV.", exc)
+            self._picam = None
+            self._cap = self.cv2.VideoCapture(device)
+            self._cap.set(self.cv2.CAP_PROP_FRAME_WIDTH, width)
+            self._cap.set(self.cv2.CAP_PROP_FRAME_HEIGHT, height)
 
         self.frame: Optional[bytes] = None
         self._lock = threading.Lock()
@@ -91,15 +114,32 @@ class FrameGrabber:
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=5)
-        if self._cap.isOpened():
+        if self._picam is not None:
+            try:
+                self._picam.stop()
+            except Exception:
+                pass
+        if self._cap is not None and self._cap.isOpened():
             self._cap.release()
 
     def _capture_loop(self) -> None:
         while self._running:
-            ok, raw = self._cap.read()
-            if not ok:
-                time.sleep(0.05)
+            raw = None
+            if self._picam is not None:
+                try:
+                    raw = self._picam.capture_array()
+                except Exception:
+                    time.sleep(0.05)
+                    continue
+            elif self._cap is not None:
+                ok, raw = self._cap.read()
+                if not ok:
+                    time.sleep(0.05)
+                    continue
+            else:
+                time.sleep(0.1)
                 continue
+
             _, buf = self.cv2.imencode(".jpg", raw, [self.cv2.IMWRITE_JPEG_QUALITY, 70])
             with self._lock:
                 self.frame = buf.tobytes()
