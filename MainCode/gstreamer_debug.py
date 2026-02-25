@@ -91,10 +91,13 @@ def check_gstreamer_install() -> dict[str, object]:
 
     # Version
     try:
+        env = {**os.environ, "GST_PAGER": "cat", "PAGER": "cat"}
         out = subprocess.check_output(
             ["gst-launch-1.0", "--version"],
+            stdin=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            env=env,
         ).decode(errors="replace")
         for line in out.splitlines():
             if "GStreamer" in line:
@@ -113,15 +116,21 @@ def check_gstreamer_install() -> dict[str, object]:
     found: list[str] = []
     gst_inspect = shutil.which("gst-inspect-1.0")
     if gst_inspect:
+        # Set GST_PAGER to prevent gst-inspect from launching a pager (less/more)
+        # which blocks or stops the subprocess on headless / piped output.
+        env = {**os.environ, "GST_PAGER": "cat", "PAGER": "cat"}
         for plugin in required_plugins:
             try:
-                subprocess.check_call(
+                proc = subprocess.run(
                     [gst_inspect, plugin],
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
+                    env=env,
                 )
-                found.append(plugin)
+                if proc.returncode == 0:
+                    found.append(plugin)
             except Exception:
                 pass
     result["plugins"] = found
