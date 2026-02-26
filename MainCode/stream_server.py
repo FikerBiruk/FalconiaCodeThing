@@ -86,7 +86,7 @@ class FrameGrabber:
             self._picam = Picamera2()
             self._picam.configure(
                 self._picam.create_video_configuration(
-                    main={"size": (width, height), "format": "RGB888"}
+                    main={"size": (width, height), "format": "BGR888"}
                 )
             )
             self._picam.start()
@@ -238,10 +238,16 @@ def create_app(
             "target_port": cam_manager.target_port,
         })
 
-    @app.teardown_appcontext
-    def _cleanup(_exc: object = None) -> None:
+    # Clean up only on actual process shutdown — NOT on every request.
+    # (teardown_appcontext fires after *each* request, which kills the stream.)
+    import atexit
+
+    def _shutdown() -> None:
+        logger.info("Shutting down: stopping stream and frame grabber.")
         cam_manager.stop_stream()
         grabber.stop()
+
+    atexit.register(_shutdown)
 
     return app
 
