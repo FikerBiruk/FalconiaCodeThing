@@ -128,14 +128,9 @@ class FrameGrabber:
             if self._picam is not None:
                 try:
                     raw = self._picam.capture_array()
-                    # Picamera2 may output RGB even if BGR888 is requested; always convert to BGR for OpenCV
+                    # Always convert from RGB to BGR for OpenCV compatibility
                     if raw is not None and raw.shape[-1] == 3:
-                        # Check if it's RGB (most likely)
-                        # OpenCV expects BGR, so convert if needed
-                        # Heuristic: if the mean of channel 0 (R) is much higher than channel 2 (B), it's RGB
-                        import numpy as np
-                        if np.mean(raw[..., 0]) > np.mean(raw[..., 2]) + 10:
-                            raw = self.cv2.cvtColor(raw, self.cv2.COLOR_RGB2BGR)
+                        raw = self.cv2.cvtColor(raw, self.cv2.COLOR_RGB2BGR)
                 except Exception:
                     time.sleep(0.05)
                     continue
