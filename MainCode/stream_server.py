@@ -252,9 +252,11 @@ def create_app(
 
 def main() -> None:
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    # Suppress noisy Picamera2 internal debug logs
+    logging.getLogger("picamera2").setLevel(logging.WARNING)
 
     parser = argparse.ArgumentParser(description="Falconia streaming server")
     parser.add_argument("--ip", default="127.0.0.1", help="RTP target IP")
