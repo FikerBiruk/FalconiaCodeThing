@@ -1,12 +1,11 @@
-
 import time
 import threading
-import multiprocessing
 import smbus2
 import RPi.GPIO as GPIO
 import os
 from flask import Flask, Response
 import cv2
+import numpy as np
 
 # Camera stream setup
 class FrameGrabber:
@@ -75,7 +74,7 @@ def video_feed():
     return Response(grabber.generate_mjpeg(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 def run_flask():
-    app.run(host="0.0.0.0", port=8080, threaded=True)
+    app.run(host="0.0.0.0", port=8080, use_reloader=False, threaded=True)
 
 # Hall sensor setup
 PCF8591_ADDRESS = 0x48
@@ -118,9 +117,9 @@ if not os.path.exists(OUTPUT_DIR):
 
 last_capture_time = 0
 
- # Start Flask app in background process
-flask_process = multiprocessing.Process(target=run_flask, daemon=True)
-flask_process.start()
+ # Start Flask app in background thread
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
 
 try:
     while True:
@@ -153,4 +152,4 @@ except KeyboardInterrupt:
 finally:
     grabber.stop()
     GPIO.cleanup()
-    flask_process.terminate()
+    flask_thread.terminate()
