@@ -79,7 +79,7 @@ def run_flask():
 # Hall sensor setup
 PCF8591_ADDRESS = 0x48
 HALL_CHANNEL = 0
-MAGNET_THRESHOLD = 100
+MAGNET_THRESHOLD = 135
 bus = smbus2.SMBus(1)
 
 def read_analog(channel):
@@ -122,13 +122,18 @@ flask_thread = threading.Thread(target=run_flask, daemon=True)
 flask_thread.start()
 
 try:
+    last_print_time = 0
     while True:
         hall_value = read_analog(HALL_CHANNEL)
         distance = get_distance()
-        print(f"Hall: {hall_value}, Distance: {distance:.2f}m")
+        current_time = time.time()
+
+        # Print sensor values every 5 seconds
+        if current_time - last_print_time >= 5:
+            print(f"Hall: {hall_value}, Distance: {distance:.2f}m")
+            last_print_time = current_time
 
         if hall_value > MAGNET_THRESHOLD:
-            current_time = time.time()
             if current_time - last_capture_time >= 5:
                 # Use latest frame from grabber for image capture
                 frame_bytes = grabber.get_latest_frame()
