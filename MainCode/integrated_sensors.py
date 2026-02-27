@@ -1,6 +1,7 @@
 
 import time
 import threading
+import multiprocessing
 import smbus2
 import RPi.GPIO as GPIO
 import os
@@ -117,9 +118,9 @@ if not os.path.exists(OUTPUT_DIR):
 
 last_capture_time = 0
 
-# Start Flask app in background thread
-flask_thread = threading.Thread(target=run_flask, daemon=True)
-flask_thread.start()
+ # Start Flask app in background process
+flask_process = multiprocessing.Process(target=run_flask, daemon=True)
+flask_process.start()
 
 try:
     while True:
@@ -152,3 +153,4 @@ except KeyboardInterrupt:
 finally:
     grabber.stop()
     GPIO.cleanup()
+    flask_process.terminate()
