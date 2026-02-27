@@ -49,12 +49,8 @@ class FrameGrabber:
             return self.frame
 
     def get_latest_raw(self):
-        with self._lock:
-            if self._cap:
-                ok, raw = self._cap.read()
-                if ok:
-                    return raw
-            return None
+        # Deprecated: Use get_latest_frame() for image capture
+        return None
 
     def generate_mjpeg(self):
         while self._running:
@@ -134,11 +130,15 @@ try:
         if hall_value > MAGNET_THRESHOLD:
             current_time = time.time()
             if current_time - last_capture_time >= 5:
-                # Use latest raw frame from grabber
-                raw_frame = grabber.get_latest_raw()
-                if raw_frame is not None:
+                # Use latest frame from grabber for image capture
+                frame_bytes = grabber.get_latest_frame()
+                if frame_bytes is not None:
+                    # Decode JPEG bytes to numpy array for saving
+                    np_arr = cv2.imdecode(
+                        np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR
+                    )
                     filename = f"{OUTPUT_DIR}/frame_{image_counter:04d}.jpg"
-                    cv2.imwrite(filename, raw_frame)
+                    cv2.imwrite(filename, np_arr)
                     print(f"Captured: {filename} | Distance: {distance:.2f}m")
                     image_counter += 1
                     last_capture_time = current_time
