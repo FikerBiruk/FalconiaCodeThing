@@ -1,25 +1,24 @@
 import time
 import atexit
-from Adafruit_MotorHAT import Adafruit_MotorHAT
+from adafruit_motorkit import MotorKit
 
-# Initialize MotorHAT at default I2C address
-mh = Adafruit_MotorHAT(addr=0x60)
+# Initialize MotorKit at default I2C address
+kit = MotorKit(address=0x60)
 
 # Clean shutdown: release all motors on exit
 def turn_off_motors():
-    mh.getMotor(1).run(Adafruit_MotorHAT.RELEASE)
+    kit.motor1.throttle = None
 
 atexit.register(turn_off_motors)
 
 # Get DC motor on port M1
-motor = mh.getMotor(1)
+motor = kit.motor1
 
-# Set speed to 50% (128 out of 255)
-motor.setSpeed(128)
+# Set speed to 50% (0.5 on a -1.0 to 1.0 scale)
+motor.throttle = 0.5
 
 # Run forward for 3 seconds
-motor.run(Adafruit_MotorHAT.FORWARD)
 time.sleep(3)
 
 # Stop the motor
-motor.run(Adafruit_MotorHAT.RELEASE)
+motor.throttle = None
