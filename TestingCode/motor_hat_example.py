@@ -8,17 +8,26 @@ kit = MotorKit(address=0x60)
 # Clean shutdown: release all motors on exit
 def turn_off_motors():
     kit.motor1.throttle = None
+    kit.motor2.throttle = None
 
 atexit.register(turn_off_motors)
 
-# Get DC motor on port M1
-motor = kit.motor1
+# Get DC motors on ports M1 and M2
+motor1 = kit.motor1
+motor2 = kit.motor2
 
-# Set speed to 50% (0.5 on a -1.0 to 1.0 scale)
-motor.throttle = 0.5
+# Set speed to 50% forward (0.5 on a -1.0 to 1.0 scale)
+motor1.throttle = 0.5
+motor2.throttle = 0.5
 
-# Run forward for 3 seconds
-time.sleep(3)
+# Run forward for 10 seconds
+time.sleep(10)
 
-# Stop the motor
-motor.throttle = None
+# Reverse direction at 50% for 10 seconds
+motor1.throttle = -0.5
+motor2.throttle = -0.5
+time.sleep(10)
+
+# Stop both motors
+motor1.throttle = None
+motor2.throttle = None
