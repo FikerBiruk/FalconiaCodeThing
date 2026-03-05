@@ -327,15 +327,18 @@ class SlopeEstimator:
     # Residual ceiling for confidence calculation (cm)
     MAX_RESIDUAL_CM = 20.0
 
-    def __init__(self, window_size: int = 20, ema_alpha: float = 0.3):
+    def __init__(self, window_size: int = 20, ema_alpha: float = 0.3, mounting_angle_deg: float = 0.0):
         """
         Args:
             window_size: Number of most-recent samples kept for regression.
             ema_alpha:   EMA smoothing factor in (0, 1].
                          0.1 = heavy smoothing, 0.9 = almost no smoothing.
+            mounting_angle_deg: Sensor mounting angle in degrees (e.g. 45 for downward tilt).
+                         The measured slope is corrected by subtracting this offset to get true ground slope.
         """
         self.window_size = window_size
         self.ema_alpha = ema_alpha
+        self.mounting_angle_deg = mounting_angle_deg
 
         # Sliding window buffers (fixed max length)
         self._timestamps: collections.deque = collections.deque(maxlen=window_size)
@@ -408,7 +411,12 @@ class SlopeEstimator:
         # --- Convert slope (cm/s) to angle (degrees) ---
         # θ = arctan(Δdistance / Δtime) converted from radians to degrees.
         # Positive → distance increasing (receding); negative → approaching.
-        slope_deg = math.degrees(math.atan(slope_cm_s))
+        measured_slope_deg = math.degrees(math.atan(slope_cm_s))
+        
+        # --- Apply mounting angle correction ---
+        # If sensor is mounted at an angle (e.g. 45° downward), subtract that offset
+        # from the measured slope to get the true ground slope.
+        slope_deg = measured_slope_deg - self.mounting_angle_deg
 
         # --- Exponential Moving Average (EMA) smoothing ---
         # EMA_new = α · current + (1 − α) · previous
@@ -942,6 +950,10 @@ def main():
         "--cal-distance", type=float, default=0.0,
         help="Known distance for calibration in cm (default: 0 = auto)",
     )
+    parser.add_argument(
+        "--mounting-angle", type=float, default=0.0,
+        help="Sensor mounting angle in degrees (e.g. 45 for downward tilt; default: 0)",
+    )
     args = parser.parse_args()
 
     # ---- Simulation / test mode ----
@@ -978,7 +990,11 @@ def main():
         return
 
     # ---- CLI mode (default) ----
-    estimator = SlopeEstimator(window_size=args.window, ema_alpha=args.alpha)
+    estimator = SlopeEstimator(
+        window_size=args.window, 
+        ema_alpha=args.alpha, 
+        mounting_angle_deg=args.mounting_angle
+    )
 
     # Register demo callbacks that print condition transitions to stderr
     def on_condition_change(reading: SlopeReading):
