@@ -1,30 +1,38 @@
 #!/usr/bin/env python3
 """
-Falconia Rover — Unified Control Interface
-==========================================
+Falconia Rover — Hybrid Control Interface (Keyboard + Gamepad)
+==============================================================
 
 Single-process web application that combines:
   - Live MJPEG video stream (browser-viewable)
-  - WASD motor control via browser keyboard input
+  - Hybrid motor control: WASD keyboard + PlayStation/Xbox controller via USB
   - Slope profiler (ultrasonic HC-SR04)
   - Hall sensor (PCF8591 ADC)
 
-All controllable from one browser tab. Sensors can be toggled on/off
-to save CPU/memory. Designed to run lean over SSH on a Raspberry Pi.
+Controller priority: Local gamepad input is prioritized when available,
+falls back to browser keyboard if controller disconnects.
 
 Usage
 -----
-    python -m MainCode.rover_control [--host 0.0.0.0] [--port 8080]
+    python -m MainCode.rover_control_hybrid [--host 0.0.0.0] [--port 8080]
 
 Then open  http://<pi-ip>:8080  in your browser.
 
-Controls (in browser)
----------------------
-    W / S  — forward / reverse
-    A / D  — turn left / right
-    Space  — emergency stop
-    1      — toggle slope profiler on/off
-    2      — toggle hall sensor on/off
+Local Controls
+--------------
+    Gamepad (PS4/Xbox via USB)
+        LStick Up/Down → throttle forward/reverse
+        LStick Left/Right → steer left/right
+        X or A → emergency stop (maps to Space in browser)
+        Y or Square → toggle slope profiler
+        B or Circle → toggle hall sensor
+
+    Keyboard (fallback/browser)
+        W / S  → forward / reverse
+        A / D  → turn left / right
+        Space → emergency stop
+        1 → toggle slope profiler
+        2 → toggle hall sensor
 """
 from __future__ import annotations
 
@@ -44,6 +52,7 @@ _HAS_GPIO = False
 _HAS_MOTORKIT = False
 _HAS_SMBUS = False
 _HAS_PICAMERA2 = False
+_HAS_PYGAME = False
 
 try:
     import RPi.GPIO as GPIO
@@ -76,6 +85,12 @@ try:
 except ImportError:
     cv2 = None  # type: ignore
 
+try:
+    import pygame
+    _HAS_PYGAME = True
+except ImportError:
+    pygame = None  # type: ignore
+
 from flask import Flask, Response, jsonify, request
 
 # ---------------------------------------------------------------------------
@@ -97,6 +112,274 @@ MOUNTING_ANGLE   = 45.0   # sensor tilt in degrees
 
 # Sensor polling
 SENSOR_INTERVAL  = 0.15   # seconds between sensor reads
+
+# Controller deadzone (0.0 to 1.0)
+CONTROLLER_DEADZONE = 0.15
+
+
+# ===================================================================
+# CONTROLLER INPUT — local gamepad via pygame
+# ===================================================================
+
+class ControllerInput:
+    """Reads gamepad input locally using pygame.
+    
+    Supports PlayStation and Xbox controllers via USB.
+    Returns normalized throttle [-1,1] and steer [-1,1] values.
+    """
+
+    def __init__(self) -> None:
+        self.throttle = 0.0
+        self.steer = 0.0
+        self.stop_requested = False
+        self.slope_toggle_requested = False
+        self.hall_toggle_requested = False
+        self._joystick = None
+        self._ready = False
+        self._lock = threading.Lock()
+        self._last_rescan = 0.0
+
+        if _HAS_PYGAME:
+            try:
+                import os
+                os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+                pygame.init()
+                logger.info("ControllerInput: pygame initialized")
+                self._ready = True
+            except Exception as e:
+                logger.warning("ControllerInput pygame init failed: %s", e)
+
+    @property
+    def available(self) -> bool:
+        """True if a controller is currently connected."""
+        if not self._ready:
+            return False
+        try:
+            return pygame.joystick.get_count() > 0
+        except Exception:
+            return False
+
+    def _rescan_joysticks(self) -> None:
+        """Re-init joystick subsystem to detect hotplugged controllers."""
+        try:
+            pygame.joystick.quit()
+            pygame.joystick.init()
+        except Exception:
+            pass
+
+    def update(self) -> None:
+        """Poll pygame events and update throttle/steer from connected gamepad."""
+        if not self._ready:
+            return
+
+        try:
+            # Re-scan for joystick if none connected (throttled to once per second)
+            if self._joystick is None:
+                now = time.monotonic()
+                if now - self._last_rescan >= 1.0:
+                    self._last_rescan = now
+                    self._rescan_joysticks()
+                    count = pygame.joystick.get_count()
+                    if count > 0:
+                        self._joystick = pygame.joystick.Joystick(0)
+                        self._joystick.init()
+                        logger.info("ControllerInput: connected to '%s'", self._joystick.get_name())
+
+            # Process events
+            for event in pygame.event.get():
+                if event.type == pygame.JOYAXISMOTION:
+                    self._handle_axis(event)
+                elif event.type == pygame.JOYBUTTONDOWN:
+                    self._handle_button_down(event)
+                elif event.type == pygame.JOYHATMOTION:
+                    self._handle_hat(event)
+                elif event.type == pygame.JOYDEVICEREMOVED:
+                    logger.warning("ControllerInput: gamepad disconnected")
+                    self._joystick = None
+                    with self._lock:
+                        self.throttle = 0.0
+                        self.steer = 0.0
+
+        except Exception as e:
+            logger.warning("ControllerInput update failed: %s", e)
+
+    def _handle_axis(self, event) -> None:
+        """Map analog sticks to throttle/steer."""
+        # Axis mapping for typical PS4/Xbox controllers:
+        # 0 = LStick X (left/right steer)
+        # 1 = LStick Y (up/down throttle)
+        # More axes exist for triggers, RStick, etc.
+
+        val = event.value
+        # Apply deadzone
+        if abs(val) < CONTROLLER_DEADZONE:
+            val = 0.0
+
+        if event.axis == 0:  # LStick X
+            with self._lock:
+                self.steer = val
+        elif event.axis == 1:  # LStick Y
+            # Y axis is typically inverted (up = -1, down = +1)
+            with self._lock:
+                self.throttle = -val
+
+    def _handle_button_down(self, event) -> None:
+        """Handle button presses for emergency stop and sensor toggles.
+        
+        Common mappings (varies by controller):
+        PS4:  0=Square, 1=Cross, 2=Circle, 3=Triangle
+        Xbox: 0=A, 1=B, 2=X, 3=Y
+        """
+        with self._lock:
+            if event.button in (0, 1):  # Square/Cross or A/B → emergency stop
+                self.throttle = 0.0
+                self.steer = 0.0
+                self.stop_requested = True
+            elif event.button == 3:  # Triangle / Y → toggle slope
+                self.slope_toggle_requested = True
+            elif event.button == 2:  # Circle / B → toggle hall
+                self.hall_toggle_requested = True
+
+    def _handle_hat(self, event) -> None:
+        """Handle D-pad (hat switch)."""
+        # event.value is a tuple: (x, y) where each is -1, 0, or 1
+        pass
+
+    def get_state(self) -> dict:
+        """Return current controller state."""
+        with self._lock:
+            return {
+                "throttle": round(self.throttle, 2),
+                "steer": round(self.steer, 2),
+                "connected": self.available,
+            }
+
+    def cleanup(self) -> None:
+        if _HAS_PYGAME:
+            try:
+                pygame.quit()
+            except Exception:
+                pass
+
+
+# ===================================================================
+# INPUT MANAGER — unified keyboard + controller input
+# ===================================================================
+
+class InputManager:
+    """Combines local controller + browser keyboard input.
+    
+    Priority: Controller input is used if available, keyboard is fallback.
+    When the controller is active, its analog values are continuously
+    applied to the motors at ~60 Hz.
+    """
+
+    def __init__(self, motors: MotorController, sensors: SensorManager) -> None:
+        self.controller = ControllerInput()
+        self._motors = motors
+        self._sensors = sensors
+        
+        # Browser keyboard state (from Flask /motor endpoint)
+        self.browser_throttle = 0.0
+        self.browser_steer = 0.0
+        
+        # Current effective command
+        self.throttle = 0.0
+        self.steer = 0.0
+        
+        # Track last sent values to skip redundant I2C writes
+        self._last_throttle = 0.0
+        self._last_steer = 0.0
+        
+        # Sensor toggle requests from browser/controller
+        self.slope_toggle_requested = False
+        self.hall_toggle_requested = False
+        
+        self._lock = threading.Lock()
+        self._running = False
+
+    def start(self) -> None:
+        """Start the update thread."""
+        if self._running:
+            return
+        self._running = True
+        t = threading.Thread(target=self._loop, daemon=True)
+        t.start()
+
+    def stop(self) -> None:
+        self._running = False
+        self.controller.cleanup()
+
+    def _loop(self) -> None:
+        """Poll controller and blend inputs, drive motors continuously."""
+        while self._running:
+            # Update controller state
+            self.controller.update()
+
+            # Check for controller button actions
+            ctrl_state = self.controller.get_state()
+            with self._lock:
+                # Handle emergency stop from controller
+                if self.controller.stop_requested:
+                    self.controller.stop_requested = False
+                    self.throttle = 0.0
+                    self.steer = 0.0
+                    self.browser_throttle = 0.0
+                    self.browser_steer = 0.0
+                    self._motors.stop()
+
+                # Handle sensor toggles from controller
+                if self.controller.slope_toggle_requested:
+                    self.controller.slope_toggle_requested = False
+                    self._sensors.slope_enabled = not self._sensors.slope_enabled
+                    if not self._sensors.slope_enabled:
+                        self._sensors.slope.reset()
+
+                if self.controller.hall_toggle_requested:
+                    self.controller.hall_toggle_requested = False
+                    self._sensors.hall_enabled = not self._sensors.hall_enabled
+
+                # Determine which input to use
+                if ctrl_state["connected"]:
+                    # Controller takes priority (use lock-safe values)
+                    self.throttle = ctrl_state["throttle"]
+                    self.steer = ctrl_state["steer"]
+                else:
+                    # Fall back to browser keyboard
+                    self.throttle = self.browser_throttle
+                    self.steer = self.browser_steer
+
+                # Only send motor commands when values actually change
+                if (self.throttle != self._last_throttle or
+                        self.steer != self._last_steer):
+                    self._motors.drive(self.throttle, self.steer)
+                    self._last_throttle = self.throttle
+                    self._last_steer = self.steer
+
+            time.sleep(0.016)  # ~60 Hz controller polling
+
+    def set_browser_input(self, throttle: float, steer: float) -> None:
+        """Update browser keyboard input (from Flask /motor endpoint)."""
+        with self._lock:
+            self.browser_throttle = max(-1.0, min(1.0, throttle))
+            self.browser_steer = max(-1.0, min(1.0, steer))
+
+    def get_command(self) -> dict:
+        """Get current throttle/steer command."""
+        with self._lock:
+            return {
+                "throttle": round(self.throttle, 2),
+                "steer": round(self.steer, 2),
+                "source": "controller" if self.controller.available else "keyboard",
+            }
+
+    def reset(self) -> None:
+        """Emergency stop — clear all inputs."""
+        with self._lock:
+            self.throttle = 0.0
+            self.steer = 0.0
+            self.browser_throttle = 0.0
+            self.browser_steer = 0.0
 
 
 # ===================================================================
@@ -525,7 +808,7 @@ class SensorManager:
 
 
 # ===================================================================
-# HTML — single-page control interface
+# HTML — single-page control interface (updated for hybrid controls)
 # ===================================================================
 
 CONTROL_PAGE = """<!DOCTYPE html>
@@ -533,7 +816,7 @@ CONTROL_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Falconia Rover</title>
+<title>Falconia Rover — Hybrid Control</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#111;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;height:100vh}
@@ -545,12 +828,15 @@ body{background:#111;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;o
 #bar .sensor-block{display:flex;align-items:center;gap:6px;padding:3px 8px;border-radius:4px;font-size:12px;background:#222;border:1px solid #333}
 #bar .sensor-block.on{border-color:#4a4}
 #bar .sensor-block.off{opacity:0.5}
+#bar .input-source{margin-left:auto;padding:3px 8px;border-radius:4px;font-size:11px;background:#222;border:1px solid #333}
+#bar .input-source.ctrl{border-color:#48f;color:#48f;font-weight:bold}
+#bar .input-source.kbd{border-color:#888;color:#888}
 .tag{font-weight:bold;font-size:11px;text-transform:uppercase;letter-spacing:0.5px}
 .val{color:#7bf}
-#keys{margin-left:auto;font-size:11px;color:#888}
+#keys{font-size:11px;color:#888}
 .k{display:inline-block;background:#333;border:1px solid #555;border-radius:3px;padding:1px 5px;font-family:monospace;min-width:18px;text-align:center}
 .k.active{background:#4a4;color:#111;border-color:#4a4}
-#motor-viz{display:flex;gap:4px;align-items:center;font-size:12px;font-family:monospace}
+#motor-viz{display:flex;gap:4px;align-items:center;font-size:12px;font-family:monospace;margin-left:8px;margin-right:8px}
 #motor-viz .mbar{width:50px;height:10px;background:#333;border-radius:2px;overflow:hidden;position:relative}
 #motor-viz .mbar .fill{height:100%;position:absolute;top:0;transition:width 0.08s}
 .fill.fwd{background:#4a4;left:50%}.fill.rev{background:#e44;right:50%}
@@ -567,6 +853,7 @@ body{background:#111;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;o
       <div id="hud-motor"></div>
       <div id="hud-slope"></div>
       <div id="hud-hall"></div>
+      <div id="hud-input"></div>
     </div>
   </div>
   <div id="bar">
@@ -589,6 +876,7 @@ body{background:#111;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;o
       <span class="k" id="kd">D</span>
       <span style="margin-left:4px" class="k" id="ksp">␣</span>
     </div>
+    <div id="input-source" class="input-source kbd">Input: Keyboard</div>
   </div>
 </div>
 <script>
@@ -678,7 +966,7 @@ body{background:#111;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;o
     bh.className='sensor-block '+(hallOn?'on':'off');
   }
 
-  // Poll sensor data + motor state
+  // Poll sensor data + motor state + input source
   function poll(){
     fetch('/status').then(r=>r.json()).then(d=>{
       // Motors
@@ -688,6 +976,18 @@ body{background:#111;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;o
       setBar(ml,lv);setBar(mr,rv);
       document.getElementById('hud-motor').textContent=
         'Motors  L:'+fmt(lv)+' R:'+fmt(rv);
+
+      // Input source
+      const src=d.input.source;
+      const srcEl=document.getElementById('input-source');
+      if(src==='controller'){
+        srcEl.textContent='Input: Gamepad';
+        srcEl.className='input-source ctrl';
+      }else{
+        srcEl.textContent='Input: Keyboard';
+        srcEl.className='input-source kbd';
+      }
+      document.getElementById('hud-input').textContent='Input: '+src;
 
       // Slope
       slopeOn=d.sensors.slope.enabled;
@@ -745,10 +1045,14 @@ def create_app() -> Flask:
     sensors = SensorManager()
     sensors.start()
 
+    inputs = InputManager(motors, sensors)
+    inputs.start()
+
     def _shutdown():
         motors.release()
         grabber.stop()
         sensors.stop()
+        inputs.stop()
     atexit.register(_shutdown)
 
     # --- Routes ---
@@ -770,7 +1074,8 @@ def create_app() -> Flask:
             s = max(-1.0, min(1.0, float(d.get("steer", 0))))
         except (ValueError, TypeError):
             return "", 400
-        motors.drive(t, s)
+        inputs.set_browser_input(t, s)
+        # Motor driving is handled by InputManager loop
         return "", 204
 
     @app.route("/sensor/toggle", methods=["POST"])
@@ -790,12 +1095,14 @@ def create_app() -> Flask:
 
     @app.route("/status")
     def status():
+        cmd = inputs.get_command()
         return jsonify({
             "motors": {
                 "left": round(motors.left_throttle, 2),
                 "right": round(motors.right_throttle, 2),
                 "available": motors.available,
             },
+            "input": cmd,
             "sensors": sensors.get_readings(),
         })
 
@@ -819,21 +1126,26 @@ def main() -> None:
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
     import argparse
-    p = argparse.ArgumentParser(description="Falconia Rover Control")
+    p = argparse.ArgumentParser(description="Falconia Rover Control (Hybrid)")
     p.add_argument("--host", default="0.0.0.0", help="Bind address (default 0.0.0.0)")
     p.add_argument("--port", type=int, default=8080, help="HTTP port (default 8080)")
     args = p.parse_args()
 
     app = create_app()
 
-    print(f"\n  Falconia Rover Control")
-    print(f"  ─────────────────────")
+    print(f"\n  Falconia Rover Control (HYBRID)")
+    print(f"  ─────────────────────────────")
     print(f"  Open in browser:  http://<pi-ip>:{args.port}")
     print(f"  Motors:    {'ready' if _HAS_MOTORKIT else 'not available'}")
     print(f"  Camera:    {'Pi Camera' if _HAS_PICAMERA2 else ('USB/OpenCV' if cv2 else 'none')}")
     print(f"  Hall:      {'ready' if _HAS_SMBUS else 'not available'}")
     print(f"  Ultrasonic: {'ready' if _HAS_GPIO else 'not available'}")
-    print(f"\n  Controls: WASD=drive, Space=stop, 1=slope, 2=hall\n")
+    print(f"  Gamepad:   {'enabled' if _HAS_PYGAME else 'not available (install pygame)'}")
+    print(f"\n  Keyboard Controls: WASD=drive, Space=stop, 1=slope, 2=hall")
+    if _HAS_PYGAME:
+        print(f"  Gamepad Controls:  LStick=drive, X/A=stop, Y/Square=slope toggle,")
+        print(f"                     B/Circle=hall toggle")
+    print()
 
     app.run(host=args.host, port=args.port, threaded=True)
 
