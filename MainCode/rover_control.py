@@ -111,10 +111,16 @@ class FrameGrabber:
         self._height = height
         self._picam = None
         self._cap = None
+        self._backend_ready = False
         self.frame: Optional[bytes] = None
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
+
+    def _init_backend(self) -> None:
+        """Initialize camera backend from background thread to avoid blocking startup."""
+        if self._backend_ready:
+            return
 
         # Try Pi Camera first, then USB
         if _HAS_PICAMERA2:
@@ -122,20 +128,27 @@ class FrameGrabber:
                 self._picam = Picamera2()
                 self._picam.configure(
                     self._picam.create_video_configuration(
-                        main={"size": (width, height), "format": "BGR888"}
+                        main={"size": (self._width, self._height), "format": "BGR888"}
                     )
                 )
                 self._picam.start()
+                self._backend_ready = True
                 logger.info("FrameGrabber: Picamera2 backend")
+                return
             except Exception as e:
                 logger.warning("Picamera2 failed (%s), trying OpenCV", e)
                 self._picam = None
 
-        if self._picam is None and cv2 is not None:
-            self._cap = cv2.VideoCapture(0)
-            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            logger.info("FrameGrabber: OpenCV backend")
+        if cv2 is not None:
+            try:
+                self._cap = cv2.VideoCapture(0)
+                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+                self._backend_ready = True
+                logger.info("FrameGrabber: OpenCV backend")
+            except Exception as e:
+                logger.warning("OpenCV camera init failed: %s", e)
+                self._cap = None
 
     def start(self) -> None:
         if self._running:
@@ -159,6 +172,12 @@ class FrameGrabber:
     def _loop(self) -> None:
         encode_param = [cv2.IMWRITE_JPEG_QUALITY, 40] if cv2 else []
         while self._running:
+            if not self._backend_ready:
+                self._init_backend()
+                if not self._backend_ready:
+                    time.sleep(0.5)
+                    continue
+
             raw = None
             if self._picam:
                 try:
@@ -263,20 +282,27 @@ class HallSensor:
         self._addr = address
         self._channel = channel
         self._bus = None
-        if _HAS_SMBUS:
-            try:
-                self._bus = smbus2.SMBus(1)
-                logger.info("HallSensor: ready on 0x%02X ch%d", address, channel)
-            except Exception as e:
-                logger.warning("HallSensor init failed: %s", e)
+
+    def _ensure_bus(self) -> bool:
+        if self._bus is not None:
+            return True
+        if not _HAS_SMBUS:
+            return False
+        try:
+            self._bus = smbus2.SMBus(1)
+            logger.info("HallSensor: ready on 0x%02X ch%d", self._addr, self._channel)
+            return True
+        except Exception as e:
+            logger.warning("HallSensor init failed: %s", e)
+            return False
 
     @property
     def available(self) -> bool:
-        return self._bus is not None
+        return self._bus is not None or _HAS_SMBUS
 
     def read(self) -> Optional[int]:
         """Return 8-bit ADC value (0-255), or None on failure."""
-        if not self._bus:
+        if not self._ensure_bus():
             return None
         try:
             self._bus.write_byte(self._addr, 0x40 | (self._channel & 0x03))
@@ -824,8 +850,6 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8080, help="HTTP port (default 8080)")
     args = p.parse_args()
 
-    app = create_app()
-
     print(f"\n  Falconia Rover Control")
     print(f"  ─────────────────────")
     print(f"  Open in browser:  http://<pi-ip>:{args.port}")
@@ -834,6 +858,9 @@ def main() -> None:
     print(f"  Hall:      {'ready' if _HAS_SMBUS else 'not available'}")
     print(f"  Ultrasonic: {'ready' if _HAS_GPIO else 'not available'}")
     print(f"\n  Controls: WASD=drive, Space=stop, 1=slope, 2=hall\n")
+    print("  Initializing services...\n")
+
+    app = create_app()
 
     app.run(host=args.host, port=args.port, threaded=True)
 
