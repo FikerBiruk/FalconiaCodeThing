@@ -97,6 +97,7 @@ MOUNTING_ANGLE   = 45.0   # sensor tilt in degrees
 
 # Sensor polling
 SENSOR_INTERVAL  = 0.15   # seconds between sensor reads
+MOTOR_COMMAND_TIMEOUT = 0.35  # auto-stop if no command arrives (network jitter safety)
 
 
 # ===================================================================
@@ -748,6 +749,11 @@ body{background:#111;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;o
   }
   function fmt(v){return (v>=0?'+':'')+v.toFixed(2)}
 
+    // Heartbeat while moving: helps absorb packet loss/jitter on SSH links.
+    setInterval(()=>{
+        if(throttle!==0 || steer!==0)sendMotor();
+    },120);
+
   setInterval(poll,250);
 })();
 </script>
@@ -768,6 +774,28 @@ def create_app() -> Flask:
     grabber.start()
 
     motors = MotorController()
+    motor_lock = threading.Lock()
+    last_motor_cmd_ts = time.monotonic()
+
+    def _drive(t: float, s: float) -> None:
+        with motor_lock:
+            motors.drive(t, s)
+
+    def _stop() -> None:
+        with motor_lock:
+            motors.stop()
+
+    def _motor_watchdog() -> None:
+        nonlocal last_motor_cmd_ts
+        while True:
+            elapsed = time.monotonic() - last_motor_cmd_ts
+            if elapsed > MOTOR_COMMAND_TIMEOUT:
+                # Auto-stop prevents stale forward commands on dropped keyup packets.
+                _stop()
+            time.sleep(0.05)
+
+    threading.Thread(target=_motor_watchdog, daemon=True).start()
+
     sensors = SensorManager()
     sensors.start()
 
@@ -790,13 +818,15 @@ def create_app() -> Flask:
 
     @app.route("/motor", methods=["POST"])
     def motor():
+        nonlocal last_motor_cmd_ts
         d = request.get_json(silent=True) or {}
         try:
             t = max(-1.0, min(1.0, float(d.get("throttle", 0))))
             s = max(-1.0, min(1.0, float(d.get("steer", 0))))
         except (ValueError, TypeError):
             return "", 400
-        motors.drive(t, s)
+        _drive(t, s)
+        last_motor_cmd_ts = time.monotonic()
         return "", 204
 
     @app.route("/sensor/toggle", methods=["POST"])
@@ -816,10 +846,13 @@ def create_app() -> Flask:
 
     @app.route("/status")
     def status():
+        with motor_lock:
+            left = round(motors.left_throttle, 2)
+            right = round(motors.right_throttle, 2)
         return jsonify({
             "motors": {
-                "left": round(motors.left_throttle, 2),
-                "right": round(motors.right_throttle, 2),
+                "left": left,
+                "right": right,
                 "available": motors.available,
             },
             "sensors": sensors.get_readings(),
