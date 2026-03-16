@@ -93,9 +93,9 @@ def run_keyboard_control(stdscr) -> None:
             throttle = 0.0
 
         if d_active and not a_active:
-            steer = 1.0
-        elif a_active and not d_active:
             steer = -1.0
+        elif a_active and not d_active:
+            steer = 1.0
         else:
             steer = 0.0
 
